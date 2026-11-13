@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>가우시안 스플랫 보기</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b0f14;color:#e2e8f0;overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}
+  canvas{display:block;width:100%;height:100%;touch-action:none}
+  .panel{position:fixed;background:rgba(11,15,20,.88);border:1px solid #1e293b;border-radius:12px;
+    padding:10px 14px;font-size:12.5px;line-height:1.7;backdrop-filter:blur(6px)}
+  #hud{left:12px;top:12px;max-width:calc(100vw - 24px)}
+  #hud h1{margin:0 0 4px;font-size:14px;color:#7dd3fc;font-weight:600}
+  ul{margin:0;padding:0;list-style:none}
+  li{color:#64748b}
+  li::before{content:"○ ";}
+  li.run{color:#facc15} li.run::before{content:"… "}
+  li.ok{color:#86efac}  li.ok::before{content:"✓ "}
+  li.bad{color:#fca5a5} li.bad::before{content:"✗ "}
+  #info{margin-top:6px;color:#cbd5e1}
+  #err{margin-top:6px;color:#fecaca;white-space:pre-wrap;display:none}
+  #ctl{right:12px;top:12px}
+  button{background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:8px;
+    padding:7px 12px;font-size:12.5px;cursor:pointer}
+  button:hover{background:#334155}
+  @media (max-width:600px){#ctl{top:auto;bottom:12px}}
+</style>
+</head>
+<body>
+<div class="panel" id="hud">
+  <h1>가우시안 스플랫 보기</h1>
+  <ul>
+    <li id="s-lib">라이브러리 불러오기</li>
+    <li id="s-renderer">렌더러 넣기</li>
+    <li id="s-fetch">파일 받기</li>
+    <li id="s-decode">알갱이로 풀기</li>
+    <li id="s-measure">크기 재기</li>
+  </ul>
+  <div id="info"></div>
+  <div id="err"></div>
+</div>
+<div class="panel" id="ctl"><button id="flip">위아래 뒤집기</button></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+    "@sparkjsdev/spark": "https://sparkjs.dev/releases/spark/2.4.0/spark.module.js"
+  }
+}
+</script>
+<script type="module">
+// ── 여기만 바꾸면 됩니다 ─────────────────────────────
+const SPLAT_FILE = "scene.sog";   // 같은 폴더의 .sog / .ply / .spz / .splat
+// ────────────────────────────────────────────────────
+
+// 확장자 → Spark 의 형식 이름. .sog 는 "pcsogszip" 이어야 합니다.
+const FILE_TYPES = { sog: "pcsogszip", ply: "ply", spz: "spz", splat: "splat", ksplat: "ksplat" };
+
+const $ = id => document.getElementById(id);
+const info = [];
+function step(id, state) { $(id).className = state; }
+function addInfo(text) { info.push(text); $("info").innerHTML = info.join("<br>"); }
+function fail(id, e) {
+  step(id, "bad");
+  $("err").style.display = "block";
+  $("err").textContent = (e && e.message) || String(e);
+  throw e;
+}
+
+// 1. 라이브러리 불러오기
+step("s-lib", "run");
+let THREE, OrbitControls, SparkRenderer, SplatMesh;
+try {
+  THREE = await import("three");
+  ({ OrbitControls } = await import("three/addons/controls/OrbitControls.js"));
+  ({ SparkRenderer, SplatMesh } = await import("@sparkjsdev/spark"));
+  step("s-lib", "ok");
+} catch (e) { fail("s-lib", e); }
+
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+document.body.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0f14);
+const camera = new THREE.PerspectiveCamera(60, 1, 0.01, 1000);
+camera.position.set(0, 0, 3);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;      // 감쇠
+controls.dampingFactor = 0.08;
+
+function resize() {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+}
+addEventListener("resize", resize);
+resize();
+
+// 2. 렌더러 넣기: SparkRenderer 를 장면에 넣어야 알갱이가 그려집니다
+step("s-renderer", "run");
+try {
+  scene.add(new SparkRenderer({ renderer }));
+  step("s-renderer", "ok");
+} catch (e) { fail("s-renderer", e); }
+
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+
+// 3. 파일 받기
+step("s-fetch", "run");
+let bytes;
+try {
+  const t0 = performance.now();
+  const res = await fetch(SPLAT_FILE);
+  if (!res.ok) throw new Error(`${SPLAT_FILE} 를 받지 못했습니다 (HTTP ${res.status})`);
+  bytes = new Uint8Array(await res.arrayBuffer());
+  const secs = (performance.now() - t0) / 1000;
+  step("s-fetch", "ok");
+  addInfo(`파일: ${SPLAT_FILE}`);
+  addInfo(`파일 크기: ${(bytes.byteLength / 1e6).toFixed(1)} MB`);
+  addInfo(`받는 데 걸린 시간: ${secs.toFixed(2)} 초`);
+} catch (e) { fail("s-fetch", e); }
+
+// 4. 알갱이로 풀기
+step("s-decode", "run");
+let mesh;
+try {
+  const ext = SPLAT_FILE.split(".").pop().toLowerCase();
+  const fileType = FILE_TYPES[ext];
+  if (!fileType) throw new Error(`모르는 확장자입니다: .${ext}`);
+  mesh = new SplatMesh({ fileBytes: bytes, fileType });
+  scene.add(mesh);
+  await mesh.initialized;
+  step("s-decode", "ok");
+  addInfo(`알갱이 개수: ${mesh.numSplats.toLocaleString("ko-KR")} 개`);
+} catch (e) { fail("s-decode", e); }
+
+// 5. 크기 재기: Spark 가 구한 경계 상자에 맞춰 카메라를 놓습니다
+step("s-measure", "run");
+function frame() {
+  mesh.updateMatrixWorld(true);
+  const box = mesh.getBoundingBox(true).clone().applyMatrix4(mesh.matrixWorld);
+  if (box.isEmpty()) throw new Error("경계 상자가 비어 있습니다");
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const radius = size.length() / 2;
+  const dist = radius / Math.sin(THREE.MathUtils.degToRad(camera.fov) / 2) * 0.8;
+  controls.target.copy(center);
+  camera.position.copy(center).add(new THREE.Vector3(0, radius * 0.25, dist));
+  camera.near = Math.max(radius / 1000, 0.001);
+  camera.far = radius * 100;
+  camera.updateProjectionMatrix();
+  controls.update();
+  return size;
+}
+try {
+  const s = frame();
+  step("s-measure", "ok");
+  addInfo(`장면 크기: ${s.x.toFixed(2)} × ${s.y.toFixed(2)} × ${s.z.toFixed(2)}`);
+} catch (e) { fail("s-measure", e); }
+
+// 위아래 뒤집기: x 축으로 180도 돌립니다 (y, z 부호 반전과 같음)
+$("flip").onclick = () => {
+  mesh.rotation.x = mesh.rotation.x === 0 ? Math.PI : 0;
+  frame();
+};
+
+window.viewer = { THREE, scene, camera, controls, renderer, mesh };
+</script>
+</body>
+</html>
